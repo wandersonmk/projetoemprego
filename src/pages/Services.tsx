@@ -185,6 +185,7 @@ export function Services() {
         provider_id: user.id,
         proposed_price: selectedService.budget,
         message: application.message,
+        status: 'pending'
       };
 
       // Adiciona os dados do provedor se disponíveis
