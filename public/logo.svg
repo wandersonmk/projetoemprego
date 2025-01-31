@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Circle background -->
+  <circle cx="64" cy="64" r="60" fill="#0EA5E9"/>
+  
+  <!-- Checkmark -->
+  <path d="M40 64L56 80L88 48" stroke="white" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- Task lines -->
+  <path d="M32 32H96" stroke="white" stroke-width="6" stroke-linecap="round" opacity="0.8"/>
+  <path d="M32 48H72" stroke="white" stroke-width="6" stroke-linecap="round" opacity="0.6"/>
+  <path d="M32 96H96" stroke="white" stroke-width="6" stroke-linecap="round" opacity="0.8"/>
+  <path d="M32 80H72" stroke="white" stroke-width="6" stroke-linecap="round" opacity="0.6"/>
+</svg>

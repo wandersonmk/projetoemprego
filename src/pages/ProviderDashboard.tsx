@@ -31,12 +31,35 @@ export function ProviderDashboard() {
   const [acceptedServices, setAcceptedServices] = useState<ServiceWithDetails[]>([]);
 
   useEffect(() => {
-    if (!user) {
-      navigate('/login');
-      return;
-    }
+    const init = async () => {
+      if (!user) {
+        navigate('/login');
+        return;
+      }
 
-    loadDashboardData();
+      try {
+        // Verifica se o usuário é um prestador de serviços
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('user_type')
+          .eq('id', user.id)
+          .single();
+
+        if (profileError) throw profileError;
+
+        if (profile.user_type !== 'provider') {
+          navigate('/client/dashboard');
+          return;
+        }
+
+        await loadDashboardData();
+      } catch (err) {
+        console.error('Error in init:', err);
+        setError('Erro ao carregar dados do dashboard');
+      }
+    };
+
+    init();
   }, [user, navigate]);
 
   const loadDashboardData = async () => {

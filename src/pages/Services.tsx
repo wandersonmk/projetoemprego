@@ -170,18 +170,40 @@ export function Services() {
     setFeedback(null);
 
     try {
+      // Primeiro, busca os dados do profissional
+      const { data: providerData, error: providerError } = await supabase
+        .from('profiles')
+        .select('full_name, avatar_url')
+        .eq('id', user.id)
+        .single();
+
+      if (providerError) throw providerError;
+
+      // Prepara os dados da candidatura
+      const applicationData = {
+        service_id: selectedService.id,
+        provider_id: user.id,
+        proposed_price: selectedService.budget,
+        message: application.message,
+      };
+
+      // Adiciona os dados do provedor se disponíveis
+      if (providerData?.full_name) {
+        Object.assign(applicationData, {
+          provider_name: providerData.full_name,
+          provider_avatar: providerData.avatar_url
+        });
+      }
+
+      // Insere a candidatura
       const { error } = await supabase
         .from('service_applications')
-        .insert([
-          {
-            service_id: selectedService.id,
-            provider_id: user.id,
-            proposed_price: selectedService.budget,
-            message: application.message,
-          },
-        ]);
+        .insert([applicationData]);
 
-      if (error) throw error;
+      if (error) {
+        console.error('Insert error:', error);
+        throw error;
+      }
 
       setShowModal(false);
       setApplication({ serviceId: '', message: '' });

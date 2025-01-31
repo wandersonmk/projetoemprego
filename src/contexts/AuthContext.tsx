@@ -4,9 +4,9 @@ import type { User } from '@supabase/supabase-js';
 
 interface AuthContextType {
   user: User | null;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<{ data: any, error: any }>;
   signUp: (email: string, password: string, userType: 'client' | 'provider', fullName: string) => Promise<void>;
-  signOut: () => Promise<void>;
+  signOut: () => Promise<{ error: any }>;
   loading: boolean;
 }
 
@@ -70,17 +70,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-    if (error) throw error;
+      if (error) throw error;
+
+      setUser(data.user);
+      return { data, error: null };
+    } catch (error) {
+      console.error('Error signing in:', error);
+      return { data: null, error };
+    }
   };
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      
+      setUser(null);
+      return { error: null };
+    } catch (error) {
+      console.error('Error signing out:', error);
+      return { error };
+    }
   };
 
   return (

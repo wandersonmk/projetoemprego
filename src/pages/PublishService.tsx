@@ -72,7 +72,7 @@ export function PublishService() {
       if (insertError) throw insertError;
 
       fireConfetti();
-      navigate('/profile');
+      navigate('/client/dashboard');
     } catch (err) {
       console.error('Error publishing service:', err);
       setError('Erro ao publicar serviço. Por favor, tente novamente.');

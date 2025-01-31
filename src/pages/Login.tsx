@@ -21,13 +21,16 @@ export function Login() {
     setError(null);
 
     try {
-      await signIn(credentials.email, credentials.password);
-      
-      // Fetch user profile to determine user type
+      // Primeiro faz o login
+      const { data: authData, error: signInError } = await signIn(credentials.email, credentials.password);
+      if (signInError) throw signInError;
+      if (!authData?.user) throw new Error('Usuário não encontrado');
+
+      // Depois busca o perfil do usuário usando o ID
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('user_type')
-        .eq('email', credentials.email)
+        .eq('id', authData.user.id)
         .single();
 
       if (profileError) throw profileError;
@@ -37,14 +40,18 @@ export function Login() {
       if (returnToService) {
         sessionStorage.removeItem('returnToService');
         navigate('/services');
-      } else {
-        // Otherwise, redirect based on user type
-        if (profile.user_type === 'provider') {
-          navigate('/provider/dashboard');
-        } else {
-          navigate('/profile');
-        }
+        return;
       }
+
+      // Redireciona baseado no tipo de usuário
+      if (profile.user_type === 'provider') {
+        navigate('/provider/dashboard');
+      } else if (profile.user_type === 'client') {
+        navigate('/client/dashboard');
+      } else {
+        throw new Error('Tipo de usuário inválido');
+      }
+
     } catch (err) {
       console.error('Login error:', err);
       setError('Email ou senha inválidos. Tente novamente.');
