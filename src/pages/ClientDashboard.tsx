@@ -112,14 +112,19 @@ export function ClientDashboard() {
         throw new Error('Erro ao carregar perfil');
       }
 
+      // Buscar serviços com candidaturas pendentes
       const { data: servicesData, error: servicesError } = await supabase
         .from('services')
         .select(`
           *,
-          applications:service_applications(*)
+          applications:service_applications!inner(
+            *,
+            provider:profiles(*)
+          )
         `)
         .eq('client_id', user.id)
-        .eq('status', 'open');
+        .eq('status', 'open')
+        .eq('service_applications.status', 'pending');
 
       if (servicesError) {
         console.error('Services error:', servicesError);
@@ -131,6 +136,7 @@ export function ClientDashboard() {
         applications: service.applications || []
       })) || [];
 
+      // Buscar serviços em andamento
       const { data: activeServicesData, error: activeServicesError } = await supabase
         .from('services')
         .select(`
@@ -416,20 +422,6 @@ export function ClientDashboard() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-6 rounded-xl`}>
             <div className="flex items-center gap-4">
-              <div className="p-3 bg-primary/10 rounded-lg">
-                <CreditCard className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-primary'}`} />
-              </div>
-              <div>
-                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Saldo de Créditos</p>
-                <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  R$ {data.profile.credits?.toFixed(2)}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-6 rounded-xl`}>
-            <div className="flex items-center gap-4">
               <div className="p-3 bg-yellow-100 dark:bg-yellow-900/20 rounded-lg">
                 <Clock className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-yellow-600'}`} />
               </div>
@@ -448,7 +440,7 @@ export function ClientDashboard() {
                 <BarChart3 className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-blue-600'}`} />
               </div>
               <div>
-                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Serviços Ativos</p>
+                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Serviços em Andamento</p>
                 <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {data.activeServices.length}
                 </p>
@@ -469,6 +461,20 @@ export function ClientDashboard() {
               </div>
             </div>
           </div>
+
+          <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-6 rounded-xl`}>
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-primary/10 rounded-lg">
+                <CreditCard className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-primary'}`} />
+              </div>
+              <div>
+                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Saldo de Créditos</p>
+                <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  R$ {data.profile.credits?.toFixed(2)}
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Recent Applications and Active Services */}
@@ -476,7 +482,7 @@ export function ClientDashboard() {
           <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} rounded-xl p-6`}>
             <div className="flex items-center justify-between mb-6">
               <h3 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                Candidaturas Recentes
+                Candidaturas Pendentes
               </h3>
             </div>
             <div className="space-y-4">
@@ -490,14 +496,27 @@ export function ClientDashboard() {
                     {service.applications.map((application) => (
                       <div
                         key={application.id}
-                        className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-4 rounded-lg border border-gray-200 ${darkMode ? 'dark:border-dark-border' : ''}`}
+                        className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-4 rounded-lg border border-gray-200 ${darkMode ? 'dark:border-dark-border' : ''} mb-4`}
                       >
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <h4 className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                              {service.title}
+                            </h4>
+                            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                              {service.description}
+                            </p>
+                          </div>
+                          <span className={`text-sm font-medium ${darkMode ? 'text-primary' : 'text-primary'}`}>
+                            R$ {service.budget.toFixed(2)}
+                          </span>
+                        </div>
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
-                            {application.provider_avatar ? (
+                            {application.provider?.avatar_url ? (
                               <img
-                                src={application.provider_avatar}
-                                alt={application.provider_name || ''}
+                                src={application.provider.avatar_url}
+                                alt={application.provider.full_name}
                                 className="w-10 h-10 rounded-full object-cover"
                               />
                             ) : (
@@ -507,10 +526,10 @@ export function ClientDashboard() {
                             )}
                             <div>
                               <h4 className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                                {application.provider_name || 'Profissional'}
+                                {application.provider?.full_name || 'Profissional'}
                               </h4>
                               <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                Valor proposto: R$ {application.proposed_price}
+                                Valor proposto: R$ {application.proposed_price.toFixed(2)}
                               </p>
                             </div>
                           </div>
