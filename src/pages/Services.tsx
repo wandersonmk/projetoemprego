@@ -170,6 +170,10 @@ export function Services() {
     setFeedback(null);
 
     try {
+      console.log('Iniciando processo de candidatura...');
+      console.log('Service ID:', selectedService.id);
+      console.log('User ID:', user.id);
+
       // Primeiro, busca os dados do profissional
       const { data: providerData, error: providerError } = await supabase
         .from('profiles')
@@ -177,34 +181,38 @@ export function Services() {
         .eq('id', user.id)
         .single();
 
-      if (providerError) throw providerError;
+      if (providerError) {
+        console.error('Erro ao buscar dados do profissional:', providerError);
+        throw providerError;
+      }
+
+      console.log('Dados do profissional:', providerData);
 
       // Prepara os dados da candidatura
       const applicationData = {
         service_id: selectedService.id,
         provider_id: user.id,
-        proposed_price: selectedService.budget,
+        status: 'pending',
         message: application.message,
-        status: 'pending'
+        proposed_price: Number(selectedService.budget),
+        created_at: new Date().toISOString()
       };
 
-      // Adiciona os dados do provedor se disponíveis
-      if (providerData?.full_name) {
-        Object.assign(applicationData, {
-          provider_name: providerData.full_name,
-          provider_avatar: providerData.avatar_url
-        });
-      }
+      console.log('Dados da candidatura:', applicationData);
 
       // Insere a candidatura
-      const { error } = await supabase
+      const { data: insertData, error: insertError } = await supabase
         .from('service_applications')
-        .insert([applicationData]);
+        .insert([applicationData])
+        .select()
+        .single();
 
-      if (error) {
-        console.error('Insert error:', error);
-        throw error;
+      if (insertError) {
+        console.error('Erro detalhado ao inserir candidatura:', insertError);
+        throw insertError;
       }
+
+      console.log('Candidatura inserida com sucesso:', insertData);
 
       setShowModal(false);
       setApplication({ serviceId: '', message: '' });
@@ -218,7 +226,7 @@ export function Services() {
       await loadServices();
 
     } catch (err) {
-      console.error('Error submitting application:', err);
+      console.error('Erro completo da candidatura:', err);
       setFeedback({
         type: 'error',
         message: 'Erro ao enviar candidatura. Por favor, tente novamente.'
@@ -226,6 +234,12 @@ export function Services() {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const formatDate = (dateString: string | null) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return `Para a data: ${date.toLocaleDateString('pt-BR')}`;
   };
 
   return (
@@ -341,7 +355,7 @@ export function Services() {
                   <div className="flex items-center justify-between pt-4 border-t border-gray-100 dark:border-dark-border">
                     <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
                       <Calendar className="w-4 h-4 mr-1" />
-                      {new Date(service.created_at).toLocaleDateString()}
+                      <span>{formatDate(service.deadline)}</span>
                     </div>
                     <button
                       onClick={() => handleApply(service)}

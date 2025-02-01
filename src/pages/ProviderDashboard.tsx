@@ -29,6 +29,8 @@ export function ProviderDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [acceptedServices, setAcceptedServices] = useState<ServiceWithDetails[]>([]);
+  const [pendingServices, setPendingServices] = useState<ServiceWithDetails[]>([]);
+  const [completedServices, setCompletedServices] = useState<ServiceWithDetails[]>([]);
 
   useEffect(() => {
     const init = async () => {
@@ -66,60 +68,144 @@ export function ProviderDashboard() {
     try {
       setIsLoading(true);
       setError(null);
+      console.log('Iniciando carregamento dos dados do dashboard');
 
-      // Fetch user profile
+      // Buscar perfil do usuário
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
-        .select(`
-          *,
-          provider_profiles (*)
-        `)
+        .select('*, provider_profiles (*)')
         .eq('id', user?.id)
         .single();
 
       if (profileError) throw profileError;
       setProfile(profileData);
+      console.log('Perfil carregado:', profileData);
 
-      // Fetch accepted services with their details
-      const { data: applications, error: servicesError } = await supabase
+      // Buscar candidaturas pendentes
+      const { data: pendingApplications, error: pendingError } = await supabase
         .from('service_applications')
         .select(`
           *,
-          service:services!inner(
+          service:services(
             *,
             client:profiles(*)
           )
         `)
         .eq('provider_id', user?.id)
-        .eq('status', 'accepted')
-        .eq('service.status', 'in_progress');
+        .eq('status', 'pending');
 
-      if (servicesError) throw servicesError;
+      if (pendingError) throw pendingError;
 
-      // Format the services data
-      const formattedServices = applications?.map(app => ({
-        ...app.service,
-        client: app.service.client,
-        application: {
-          id: app.id,
-          service_id: app.service_id,
-          provider_id: app.provider_id,
-          proposed_price: app.proposed_price,
-          message: app.message,
-          status: app.status,
-          created_at: app.created_at
-        }
+      // Buscar serviços em andamento (aceitos pelo cliente)
+      const { data: inProgressServices, error: inProgressError } = await supabase
+        .from('services')
+        .select(`
+          *,
+          client:profiles(*),
+          service_applications!inner(*)
+        `)
+        .eq('service_applications.provider_id', user?.id)
+        .eq('service_applications.status', 'accepted')
+        .eq('status', 'in_progress');
+
+      if (inProgressError) {
+        console.error('Erro ao buscar serviços em andamento:', inProgressError);
+        throw inProgressError;
+      }
+      console.log('Serviços em andamento (raw):', inProgressServices);
+
+      // Formatar serviços em andamento
+      const formattedInProgressServices = inProgressServices?.map(service => ({
+        ...service,
+        application: service.service_applications[0]
       })) || [];
 
-      setAcceptedServices(formattedServices);
+      console.log('Serviços em andamento (formatados):', formattedInProgressServices);
+      setAcceptedServices(formattedInProgressServices);
+
+      // Buscar serviços concluídos
+      const { data: completedServices, error: completedError } = await supabase
+        .from('services')
+        .select(`
+          *,
+          client:profiles(*),
+          service_applications!inner(*)
+        `)
+        .eq('service_applications.provider_id', user?.id)
+        .eq('service_applications.status', 'accepted')
+        .eq('status', 'completed');
+
+      if (completedError) throw completedError;
+
+      // Formatar serviços pendentes
+      const formattedPendingServices = pendingApplications
+        ?.filter(app => app.service?.status === 'open')
+        .map(app => ({
+          ...app.service,
+          client: app.service.client,
+          application: app
+        })) || [];
+
+      // Formatar serviços concluídos
+      const formattedCompletedServices = completedServices?.map(service => ({
+        ...service,
+        application: service.service_applications[0]
+      })) || [];
+
+      console.log('Serviços em andamento:', formattedInProgressServices);
+
+      setPendingServices(formattedPendingServices);
+      setCompletedServices(formattedCompletedServices);
 
     } catch (err) {
-      console.error('Error loading dashboard data:', err);
-      setError('Erro ao carregar dados do painel');
+      console.error('Erro ao carregar dados:', err);
+      setError('Erro ao carregar dados do dashboard');
     } finally {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (user) {
+      loadDashboardData();
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const serviceChanges = supabase
+      .channel('service-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'services'
+        },
+        (payload) => {
+          console.log('Mudança detectada em services:', payload);
+          loadDashboardData();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'service_applications'
+        },
+        (payload) => {
+          console.log('Mudança detectada em service_applications:', payload);
+          loadDashboardData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      serviceChanges.unsubscribe();
+    };
+  }, [user]);
 
   const handleSignOut = async () => {
     try {
@@ -282,12 +368,9 @@ export function ProviderDashboard() {
             ) : (
               <div className="bg-white dark:bg-dark-lighter rounded-xl shadow-sm">
                 <div className="p-6 border-b border-gray-200 dark:border-dark-border">
-                  <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+                  <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
                     Meus Serviços
                   </h2>
-                  <p className="text-gray-600 dark:text-gray-400 mt-1">
-                    Serviços em que você foi selecionado
-                  </p>
                 </div>
 
                 <div className="p-6">
@@ -295,68 +378,112 @@ export function ProviderDashboard() {
                     <div className="flex justify-center items-center py-12">
                       <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
                     </div>
-                  ) : acceptedServices.length === 0 ? (
-                    <div className="text-center py-12">
-                      <Briefcase className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                      <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-                        Nenhum serviço em andamento
-                      </h3>
-                      <p className="text-gray-600 dark:text-gray-400 mb-4">
-                        Você ainda não foi selecionado para nenhum serviço
-                      </p>
-                      <Link
-                        to="/services"
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition"
-                      >
-                        <Search className="w-4 h-4" />
-                        <span>Buscar Serviços</span>
-                      </Link>
-                    </div>
                   ) : (
-                    <div className="space-y-6">
-                      {acceptedServices.map((service) => (
-                        <div
-                          key={service.id}
-                          className="bg-gray-50 dark:bg-dark rounded-lg p-6 hover:shadow-md transition-shadow"
-                        >
-                          <div className="flex justify-between items-start mb-4">
-                            <div>
-                              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
-                                {service.title}
-                              </h3>
-                              <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
-                                <div className="flex items-center gap-1">
-                                  <UserIcon className="w-4 h-4" />
-                                  <span>{service.client.full_name}</span>
-                                </div>
-                                <div className="flex items-center gap-1">
-                                  <MapPin className="w-4 h-4" />
-                                  <span>{service.location}</span>
+                    <div className="mt-8">
+                      <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+                        Meus Serviços
+                      </h2>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Coluna: Pendentes */}
+                        <div className="bg-red-100/50 dark:bg-red-900/10 rounded-xl overflow-hidden">
+                          <div className="bg-red-200 dark:bg-red-900/30 p-4">
+                            <h3 className="text-lg font-semibold text-red-800 dark:text-red-200">
+                              Pendentes ({pendingServices.length})
+                            </h3>
+                          </div>
+                          <div className="p-4 space-y-4 min-h-[500px]">
+                            {pendingServices.map((service) => (
+                              <div
+                                key={service.id}
+                                className="bg-white dark:bg-dark-lighter shadow-sm hover:shadow-md transition-shadow rounded-lg p-4"
+                              >
+                                <h4 className="font-medium text-gray-900 dark:text-white mb-2">
+                                  {service.title}
+                                </h4>
+                                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3 line-clamp-2">
+                                  {service.description}
+                                </p>
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="text-primary font-medium">
+                                    R$ {service.budget.toFixed(2)}
+                                  </span>
+                                  <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                                    <Clock className="w-4 h-4" />
+                                    <span>Aguardando</span>
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="bg-primary/10 text-primary px-3 py-1 rounded-full text-sm font-medium">
-                                R$ {service.application.proposed_price.toFixed(2)}
-                              </span>
-                            </div>
-                          </div>
-
-                          <p className="text-gray-600 dark:text-gray-300 mb-4">
-                            {service.description}
-                          </p>
-
-                          <div className="flex items-center justify-between pt-4 border-t border-gray-200 dark:border-dark-border">
-                            <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-                              <Calendar className="w-4 h-4" />
-                              <span>Prazo: {new Date(service.deadline || '').toLocaleDateString()}</span>
-                            </div>
-                            <button className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition">
-                              Iniciar Chat
-                            </button>
+                            ))}
                           </div>
                         </div>
-                      ))}
+
+                        {/* Coluna: Em Andamento */}
+                        <div className="bg-yellow-100/50 dark:bg-yellow-900/10 rounded-xl overflow-hidden">
+                          <div className="bg-yellow-200 dark:bg-yellow-900/30 p-4">
+                            <h3 className="text-lg font-semibold text-yellow-800 dark:text-yellow-200">
+                              Em Andamento ({acceptedServices.length})
+                            </h3>
+                          </div>
+                          <div className="p-4 space-y-4 min-h-[500px]">
+                            {acceptedServices.map((service) => (
+                              <div
+                                key={service.id}
+                                className="bg-white dark:bg-dark-lighter shadow-sm hover:shadow-md transition-shadow rounded-lg p-4"
+                              >
+                                <h4 className="font-medium text-gray-900 dark:text-white mb-2">
+                                  {service.title}
+                                </h4>
+                                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3 line-clamp-2">
+                                  {service.description}
+                                </p>
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="text-primary font-medium">
+                                    R$ {service.application.proposed_price.toFixed(2)}
+                                  </span>
+                                  <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                                    <UserIcon className="w-4 h-4" />
+                                    <span>{service.client.full_name}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Coluna: Concluídos */}
+                        <div className="bg-blue-100/50 dark:bg-blue-900/10 rounded-xl overflow-hidden">
+                          <div className="bg-blue-200 dark:bg-blue-900/30 p-4">
+                            <h3 className="text-lg font-semibold text-blue-800 dark:text-blue-200">
+                              Concluídos ({completedServices.length})
+                            </h3>
+                          </div>
+                          <div className="p-4 space-y-4 min-h-[500px]">
+                            {completedServices.map((service) => (
+                              <div
+                                key={service.id}
+                                className="bg-white dark:bg-dark-lighter shadow-sm hover:shadow-md transition-shadow rounded-lg p-4"
+                              >
+                                <h4 className="font-medium text-gray-900 dark:text-white mb-2">
+                                  {service.title}
+                                </h4>
+                                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3 line-clamp-2">
+                                  {service.description}
+                                </p>
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="text-primary font-medium">
+                                    R$ {service.application.proposed_price.toFixed(2)}
+                                  </span>
+                                  <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                                    <CheckCircle className="w-4 h-4" />
+                                    <span>Finalizado</span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

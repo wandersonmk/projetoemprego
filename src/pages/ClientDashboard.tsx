@@ -20,6 +20,9 @@ import {
   MapPin,
   Sun,
   Moon,
+  Search,
+  X,
+  Trash2
 } from 'lucide-react';
 
 type Profile = {
@@ -82,6 +85,16 @@ export function ClientDashboard() {
     const saved = localStorage.getItem('darkMode');
     return saved ? JSON.parse(saved) : false;
   });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [newService, setNewService] = useState({
+    title: '',
+    description: '',
+    budget: '',
+    location: '',
+    deadline: '',
+    category: ''
+  });
 
   useEffect(() => {
     if (darkMode) {
@@ -101,6 +114,12 @@ export function ClientDashboard() {
         throw new Error('Usuário não autenticado');
       }
 
+      // Verificar sessão antes de fazer as requisições
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) {
+        throw new Error('Sessão expirada');
+      }
+
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
         .select('*')
@@ -108,7 +127,10 @@ export function ClientDashboard() {
         .single();
 
       if (profileError) {
-        console.error('Profile error:', profileError);
+        if (profileError.code === 'PGRST301') {
+          throw new Error('Sessão expirada');
+        }
+        console.error('Erro ao carregar perfil:', profileError);
         throw new Error('Erro ao carregar perfil');
       }
 
@@ -194,6 +216,12 @@ export function ClientDashboard() {
       }
 
       try {
+        // Verificar se o token ainda é válido
+        const { data: session } = await supabase.auth.getSession();
+        if (!session.session) {
+          throw new Error('Sessão expirada');
+        }
+
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('user_type')
@@ -201,7 +229,13 @@ export function ClientDashboard() {
           .single();
 
         if (profileError) {
-          console.error('Profile error:', profileError);
+          if (profileError.code === 'PGRST301') {
+            // Erro de autenticação
+            await signOut();
+            navigate('/login');
+            return;
+          }
+          console.error('Erro ao verificar perfil:', profileError);
           throw new Error('Erro ao verificar tipo de usuário');
         }
 
@@ -212,14 +246,19 @@ export function ClientDashboard() {
 
         await loadDashboardData();
       } catch (err) {
-        console.error('Error in init:', err);
+        console.error('Erro na inicialização:', err);
+        if (err instanceof Error && err.message === 'Sessão expirada') {
+          await signOut();
+          navigate('/login');
+          return;
+        }
         setError(err instanceof Error ? err.message : 'Erro ao inicializar dashboard');
         setIsLoading(false);
       }
     };
 
     init();
-  }, [user, navigate]);
+  }, [user, navigate, signOut]);
 
   const [data, setData] = useState<DashboardData>({
     profile: null,
@@ -229,39 +268,47 @@ export function ClientDashboard() {
     applications: [],
   });
 
-  const handleAcceptApplication = async (application: ServiceApplication) => {
-    if (isProcessing) return;
-    setIsProcessing(true);
-    setError(null);
-
+  const handleAcceptApplication = async (applicationId: string) => {
     try {
+      setIsProcessing(true);
+
+      // Buscar informações da candidatura
+      const { data: applicationData, error: fetchError } = await supabase
+        .from('service_applications')
+        .select('*')
+        .eq('id', applicationId)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      // Atualizar status da candidatura aceita
+      const { error: acceptError } = await supabase
+        .from('service_applications')
+        .update({ status: 'accepted' })
+        .eq('id', applicationId);
+
+      if (acceptError) throw acceptError;
+
+      // Rejeitar outras candidaturas
+      const { error: rejectError } = await supabase
+        .from('service_applications')
+        .update({ status: 'rejected' })
+        .eq('service_id', applicationData.service_id)
+        .neq('id', applicationId);
+
+      if (rejectError) throw rejectError;
+
+      // Atualizar status do serviço
       const { error: serviceError } = await supabase
         .from('services')
         .update({ status: 'in_progress' })
-        .eq('id', application.service_id);
+        .eq('id', applicationData.service_id);
 
-      if (serviceError) {
-        console.error('Service update error:', serviceError);
-        throw serviceError;
-      }
+      if (serviceError) throw serviceError;
 
-      const { error: applicationError } = await supabase
-        .from('service_applications')
-        .update({ status: 'accepted' })
-        .eq('id', application.id);
-
-      if (applicationError) {
-        console.error('Application update error:', applicationError);
-        throw applicationError;
-      }
-
-      console.log('Updates successful, reloading data...');
-      
-      await loadDashboardData();
-
-    } catch (err) {
-      console.error('Error in handleAcceptApplication:', err);
-      setError('Erro ao aceitar candidatura. Por favor, tente novamente.');
+      loadDashboardData();
+    } catch (error) {
+      console.error('Erro ao aceitar candidatura:', error);
     } finally {
       setIsProcessing(false);
     }
@@ -302,6 +349,189 @@ export function ClientDashboard() {
       setIsProcessing(false);
     }
   };
+
+  const handleCompleteService = async (serviceId: string) => {
+    try {
+      setIsProcessing(true);
+      console.log('Iniciando conclusão do serviço:', { serviceId });
+
+      // Atualizar o status do serviço para 'completed'
+      const { error: serviceError } = await supabase
+        .from('services')
+        .update({ status: 'completed' })
+        .eq('id', serviceId);
+
+      if (serviceError) {
+        console.error('Erro ao atualizar serviço:', serviceError);
+        throw serviceError;
+      }
+      console.log('Serviço atualizado para completed');
+
+      console.log('Updates successful, reloading data...');
+      
+      await loadDashboardData();
+
+    } catch (err) {
+      console.error('Error in handleCompleteService:', err);
+      setError('Erro ao concluir serviço. Por favor, tente novamente.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleCreateService = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    try {
+      // Validação dos campos
+      if (!newService.title.trim()) {
+        throw new Error('O título é obrigatório');
+      }
+      if (!newService.description.trim()) {
+        throw new Error('A descrição é obrigatória');
+      }
+      if (!newService.budget || parseFloat(newService.budget) <= 0) {
+        throw new Error('O orçamento deve ser maior que zero');
+      }
+      if (!newService.location.trim()) {
+        throw new Error('A localização é obrigatória');
+      }
+      if (!newService.deadline) {
+        throw new Error('O prazo é obrigatório');
+      }
+      if (!newService.category) {
+        throw new Error('A categoria é obrigatória');
+      }
+
+      setIsProcessing(true);
+      setError(null);
+
+      const { data: service, error } = await supabase
+        .from('services')
+        .insert([
+          {
+            title: newService.title.trim(),
+            description: newService.description.trim(),
+            budget: parseFloat(newService.budget),
+            location: newService.location.trim(),
+            deadline: newService.deadline,
+            category: newService.category,
+            client_id: user?.id,
+            status: 'open' // Alterado de 'requested' para 'open'
+          }
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setIsModalOpen(false);
+      setNewService({
+        title: '',
+        description: '',
+        budget: '',
+        location: '',
+        deadline: '',
+        category: ''
+      });
+      
+      await loadDashboardData();
+      alert('Serviço criado com sucesso!');
+    } catch (error) {
+      console.error('Erro ao criar serviço:', error);
+      setError(error instanceof Error ? error.message : 'Erro ao criar serviço. Tente novamente.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const filterServices = (services: any[]) => {
+    if (!searchTerm) return services;
+    
+    const searchLower = searchTerm.toLowerCase();
+    return services.filter(service => 
+      service.title.toLowerCase().includes(searchLower) ||
+      service.description.toLowerCase().includes(searchLower) ||
+      service.location?.toLowerCase().includes(searchLower) ||
+      (service.applications?.some((app: any) => 
+        app.provider?.full_name.toLowerCase().includes(searchLower) ||
+        app.message?.toLowerCase().includes(searchLower)
+      ))
+    );
+  };
+
+  // Atualizar os filtros de status
+  const openServices = data.pendingServices.filter(service => service.status === 'open');
+  const inProgressServices = data.activeServices.filter(service => service.status === 'in_progress');
+  const completedServices = data.completedServices.filter(service => service.status === 'completed');
+
+  const filteredOpenServices = filterServices(openServices);
+  const filteredInProgressServices = filterServices(inProgressServices);
+  const filteredCompletedServices = filterServices(completedServices);
+
+  const formatCurrency = (value: string) => {
+    // Remove tudo que não é número
+    let number = value.replace(/\D/g, '');
+    
+    // Se não houver número, retorna R$ 0,00
+    if (!number) {
+      return 'R$ 0,00';
+    }
+    
+    // Converte para número e divide por 100 para considerar centavos
+    const amount = Number(number) / 100;
+    
+    // Formata para real brasileiro
+    return new Intl.NumberFormat('pt-BR', {
+      style: 'currency',
+      currency: 'BRL',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(amount);
+  };
+
+  const handleBudgetChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    // Remove formatação para armazenar apenas o número
+    const numericValue = value.replace(/\D/g, '');
+    
+    // Atualiza o estado com o valor numérico (para uso interno)
+    setNewService({
+      ...newService,
+      budget: numericValue ? (Number(numericValue) / 100).toString() : ''
+    });
+
+    // Atualiza o valor exibido no input
+    e.target.value = formatCurrency(numericValue);
+  };
+
+  const handleBudgetFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+    // Se o valor for zero, limpa o campo ao focar
+    if (e.target.value === 'R$ 0,00') {
+      e.target.value = '';
+    }
+  };
+
+  const handleBudgetBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    // Se o campo estiver vazio ao perder o foco, coloca zero
+    if (!e.target.value) {
+      e.target.value = formatCurrency('0');
+      setNewService({
+        ...newService,
+        budget: '0'
+      });
+    }
+  };
+
+  // Adicionar array de cidades disponíveis
+  const availableCities = [
+    'Salto',
+    'Indaiatuba',
+    'Itu',
+    'Sorocaba',
+    'Campinas',
+    'São Paulo'
+  ];
 
   if (!user) {
     return null;
@@ -419,16 +649,30 @@ export function ClientDashboard() {
         )}
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-6 rounded-xl`}>
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-red-100 dark:bg-red-900/20 rounded-lg">
+                <Clock className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-red-600'}`} />
+              </div>
+              <div>
+                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Candidaturas Pendentes</p>
+                <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  {openServices.length}
+                </p>
+              </div>
+            </div>
+          </div>
+
           <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-6 rounded-xl`}>
             <div className="flex items-center gap-4">
               <div className="p-3 bg-yellow-100 dark:bg-yellow-900/20 rounded-lg">
-                <Clock className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-yellow-600'}`} />
+                <BarChart3 className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-yellow-600'}`} />
               </div>
               <div>
-                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Serviços Pendentes</p>
+                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Em Andamento</p>
                 <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {data.pendingServices.length}
+                  {inProgressServices.length}
                 </p>
               </div>
             </div>
@@ -437,40 +681,12 @@ export function ClientDashboard() {
           <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-6 rounded-xl`}>
             <div className="flex items-center gap-4">
               <div className="p-3 bg-blue-100 dark:bg-blue-900/20 rounded-lg">
-                <BarChart3 className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-blue-600'}`} />
-              </div>
-              <div>
-                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Serviços em Andamento</p>
-                <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {data.activeServices.length}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-6 rounded-xl`}>
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-green-100 dark:bg-green-900/20 rounded-lg">
-                <CheckCircle className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-green-600'}`} />
+                <CheckCircle className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-blue-600'}`} />
               </div>
               <div>
                 <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Serviços Concluídos</p>
                 <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {data.completedServices.length}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-6 rounded-xl`}>
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-primary/10 rounded-lg">
-                <CreditCard className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-primary'}`} />
-              </div>
-              <div>
-                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Saldo de Créditos</p>
-                <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  R$ {data.profile.credits?.toFixed(2)}
+                  {completedServices.length}
                 </p>
               </div>
             </div>
@@ -478,136 +694,304 @@ export function ClientDashboard() {
         </div>
 
         {/* Recent Applications and Active Services */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} rounded-xl p-6`}>
-            <div className="flex items-center justify-between mb-6">
-              <h3 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                Candidaturas Pendentes
-              </h3>
-            </div>
-            <div className="space-y-4">
-              {data.pendingServices.length === 0 ? (
-                <p className={`text-gray-500 ${darkMode ? 'dark:text-gray-400' : ''}`}>
-                  Nenhuma candidatura pendente
-                </p>
-              ) : (
-                data.pendingServices.map((service) => (
-                  <div key={service.id}>
-                    {service.applications.map((application) => (
-                      <div
-                        key={application.id}
-                        className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} p-4 rounded-lg border border-gray-200 ${darkMode ? 'dark:border-dark-border' : ''} mb-4`}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div>
-                            <h4 className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                              {service.title}
-                            </h4>
-                            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                              {service.description}
-                            </p>
-                          </div>
-                          <span className={`text-sm font-medium ${darkMode ? 'text-primary' : 'text-primary'}`}>
-                            R$ {service.budget.toFixed(2)}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            {application.provider?.avatar_url ? (
-                              <img
-                                src={application.provider.avatar_url}
-                                alt={application.provider.full_name}
-                                className="w-10 h-10 rounded-full object-cover"
-                              />
-                            ) : (
-                              <div className={`w-10 h-10 ${darkMode ? 'bg-gray-700' : 'bg-primary/10'} rounded-full flex items-center justify-center`}>
-                                <UserIcon className={`w-6 h-6 ${darkMode ? 'text-white' : 'text-primary'}`} />
-                              </div>
-                            )}
-                            <div>
-                              <h4 className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                                {application.provider?.full_name || 'Profissional'}
-                              </h4>
-                              <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                Valor proposto: R$ {application.proposed_price.toFixed(2)}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => handleAcceptApplication(application)}
-                              disabled={isProcessing}
-                              className={`px-3 py-1 ${darkMode ? 'bg-primary text-white hover:bg-primary-dark' : 'bg-primary text-white hover:bg-primary-dark'} rounded-lg text-sm transition disabled:opacity-50`}
-                            >
-                              {isProcessing ? 'Processando...' : 'Aceitar'}
-                            </button>
-                            <button
-                              onClick={() => handleRejectApplication(application)}
-                              disabled={isProcessing}
-                              className={`px-3 py-1 ${darkMode ? 'bg-gray-200 text-gray-700 hover:bg-gray-300' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'} rounded-lg text-sm transition disabled:opacity-50`}
-                            >
-                              {isProcessing ? 'Processando...' : 'Recusar'}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ))
-              )}
+        <div className="mt-8">
+          <div className="flex flex-col md:flex-row justify-between items-center mb-6">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4 md:mb-0">
+              Meus Serviços
+            </h2>
+            <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
+              <div className="relative w-full md:w-96">
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Buscar serviços..."
+                  className="w-full px-4 py-2 pl-10 pr-4 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-dark-lighter text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+              </div>
+              <button
+                onClick={() => setIsModalOpen(true)}
+                className="w-full md:w-auto px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Solicitar Serviço
+              </button>
             </div>
           </div>
 
-          {/* Active Services */}
-          <div className={`bg-white ${darkMode ? 'dark:bg-dark-lighter' : ''} rounded-xl p-6`}>
-            <h3 className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'} mb-6`}>
-              Serviços em Andamento
-            </h3>
-            <div className="space-y-4">
-              {data.activeServices.length === 0 ? (
-                <p className={`text-gray-500 ${darkMode ? 'dark:text-gray-400' : ''}`}>
-                  Nenhum serviço em andamento
-                </p>
-              ) : (
-                data.activeServices.map((service) => (
+          {/* Modal de Solicitação de Serviço */}
+          {isModalOpen && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white dark:bg-dark-lighter rounded-xl p-6 w-full max-w-2xl">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
+                    Solicitar Novo Serviço
+                  </h3>
+                  <button
+                    onClick={() => setIsModalOpen(false)}
+                    className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                  >
+                    <X className="w-6 h-6" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleCreateService} className="space-y-4">
+                  {error && (
+                    <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                      <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Título
+                    </label>
+                    <input
+                      type="text"
+                      value={newService.title}
+                      onChange={(e) => setNewService({ ...newService, title: e.target.value })}
+                      required
+                      className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-dark text-gray-900 dark:text-white"
+                      placeholder="Ex: Desenvolvimento de Website"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Descrição
+                    </label>
+                    <textarea
+                      value={newService.description}
+                      onChange={(e) => setNewService({ ...newService, description: e.target.value })}
+                      required
+                      rows={4}
+                      className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-dark text-gray-900 dark:text-white"
+                      placeholder="Descreva os detalhes do serviço..."
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Orçamento
+                      </label>
+                      <input
+                        type="text"
+                        value={newService.budget ? formatCurrency(Math.round(parseFloat(newService.budget) * 100).toString()) : 'R$ 0,00'}
+                        onChange={handleBudgetChange}
+                        onFocus={handleBudgetFocus}
+                        onBlur={handleBudgetBlur}
+                        required
+                        className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-dark text-gray-900 dark:text-white"
+                        placeholder="R$ 0,00"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Localização
+                      </label>
+                      <select
+                        value={newService.location}
+                        onChange={(e) => setNewService({ ...newService, location: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-dark text-gray-900 dark:text-white"
+                      >
+                        <option value="">Selecione uma cidade</option>
+                        {availableCities.map((city) => (
+                          <option key={city} value={city}>
+                            {city}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Prazo
+                      </label>
+                      <input
+                        type="date"
+                        value={newService.deadline}
+                        onChange={(e) => setNewService({ ...newService, deadline: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-dark text-gray-900 dark:text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Categoria
+                      </label>
+                      <select
+                        value={newService.category}
+                        onChange={(e) => setNewService({ ...newService, category: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-dark text-gray-900 dark:text-white"
+                      >
+                        <option value="">Selecione uma categoria</option>
+                        <option value="desenvolvimento">Desenvolvimento</option>
+                        <option value="design">Design</option>
+                        <option value="marketing">Marketing</option>
+                        <option value="redacao">Redação</option>
+                        <option value="traducao">Tradução</option>
+                        <option value="outros">Outros</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-4 mt-6">
+                    <button
+                      type="button"
+                      onClick={() => setIsModalOpen(false)}
+                      className="px-6 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-dark transition"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isProcessing}
+                      className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition disabled:opacity-50"
+                    >
+                      {isProcessing ? 'Criando...' : 'Criar Serviço'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Coluna: Candidaturas Pendentes */}
+            <div className="bg-red-100/50 dark:bg-red-900/10 rounded-xl overflow-hidden">
+              <div className="bg-red-200 dark:bg-red-900/30 p-4">
+                <h3 className="text-lg font-semibold text-red-800 dark:text-red-200">
+                  Candidaturas Pendentes ({filteredOpenServices.length})
+                </h3>
+              </div>
+              <div className="p-4 space-y-4 min-h-[500px]">
+                {filteredOpenServices.map((service) => (
                   <div
                     key={service.id}
-                    className={`p-4 ${darkMode ? 'bg-gray-50 dark:bg-dark' : 'bg-gray-50'} rounded-lg`}
+                    className="bg-white dark:bg-dark-lighter shadow-sm hover:shadow-md transition-shadow rounded-lg p-4"
                   >
-                    <div className="flex justify-between items-start mb-2">
-                      <h4 className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {service.title}
-                      </h4>
-                      <span className={`text-sm font-medium ${darkMode ? 'text-primary' : 'text-primary'}`}>
-                        R$ {service.budget.toFixed(2)}
-                      </span>
-                    </div>
-                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'} mb-3`}>
+                    <h4 className="font-medium text-gray-900 dark:text-white mb-2">
+                      {service.title}
+                    </h4>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-3 line-clamp-2">
                       {service.description}
                     </p>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-                          <UserIcon className="w-4 h-4" />
-                          <span>
-                            Profissional: {service.provider?.full_name || 'Não definido'}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-                          <MapPin className={`w-4 h-4 ${darkMode ? 'text-white' : 'text-gray-400'}`} />
-                          <span>{service.location}</span>
-                        </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-primary font-medium">
+                        R$ {service.budget.toFixed(2)}
+                      </span>
+                      <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                        <UserIcon className="w-4 h-4" />
+                        <span>{service.applications?.length || 0} candidatos</span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Calendar className={`w-4 h-4 ${darkMode ? 'text-white' : 'text-gray-400'}`} />
-                        <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-500'}`}>
-                          {new Date(service.deadline || '').toLocaleDateString()}
+                    </div>
+                    {service.applications && service.applications.length > 0 && (
+                      <div className="mt-4 space-y-3">
+                        {service.applications.map((application) => (
+                          <div
+                            key={application.id}
+                            className="p-3 bg-gray-50 dark:bg-dark rounded-lg"
+                          >
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="font-medium dark:text-white">
+                                {application.provider?.full_name}
+                              </span>
+                              <button
+                                onClick={() => handleAcceptApplication(application.id)}
+                                className="px-3 py-1 bg-primary text-white rounded-lg text-sm hover:bg-primary-dark transition"
+                              >
+                                Aceitar
+                              </button>
+                            </div>
+                            <p className="text-sm text-gray-600 dark:text-gray-400">
+                              {application.message}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Coluna: Em Andamento */}
+            <div className="bg-yellow-100/50 dark:bg-yellow-900/10 rounded-xl overflow-hidden">
+              <div className="bg-yellow-200 dark:bg-yellow-900/30 p-4">
+                <h3 className="text-lg font-semibold text-yellow-800 dark:text-yellow-200">
+                  Em Andamento ({filteredInProgressServices.length})
+                </h3>
+              </div>
+              <div className="p-4 space-y-4 min-h-[500px]">
+                {filteredInProgressServices.map((service) => (
+                  <div
+                    key={service.id}
+                    className="bg-white dark:bg-dark-lighter shadow-sm hover:shadow-md transition-shadow rounded-lg p-4"
+                  >
+                    <h4 className="font-medium text-gray-900 dark:text-white mb-2">
+                      {service.title}
+                    </h4>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-3 line-clamp-2">
+                      {service.description}
+                    </p>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-primary font-medium">
+                        R$ {service.budget.toFixed(2)}
+                      </span>
+                      <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                        <UserIcon className="w-4 h-4" />
+                        <span>
+                          {service.applications?.find(app => app.status === 'accepted')?.provider?.full_name}
                         </span>
                       </div>
                     </div>
+                    <button 
+                      onClick={() => handleCompleteService(service.id)}
+                      className="mt-4 w-full px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition"
+                    >
+                      Marcar como Concluído
+                    </button>
                   </div>
-                ))
-              )}
+                ))}
+              </div>
+            </div>
+
+            {/* Coluna: Concluídos */}
+            <div className="bg-blue-100/50 dark:bg-blue-900/10 rounded-xl overflow-hidden">
+              <div className="bg-blue-200 dark:bg-blue-900/30 p-4">
+                <h3 className="text-lg font-semibold text-blue-800 dark:text-blue-200">
+                  Concluídos ({filteredCompletedServices.length})
+                </h3>
+              </div>
+              <div className="p-4 space-y-4 min-h-[500px]">
+                {filteredCompletedServices.map((service) => (
+                  <div
+                    key={service.id}
+                    className="bg-white dark:bg-dark-lighter shadow-sm hover:shadow-md transition-shadow rounded-lg p-4"
+                  >
+                    <h4 className="font-medium text-gray-900 dark:text-white mb-2">
+                      {service.title}
+                    </h4>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-3 line-clamp-2">
+                      {service.description}
+                    </p>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-primary font-medium">
+                        R$ {service.budget.toFixed(2)}
+                      </span>
+                      <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                        <CheckCircle className="w-4 h-4" />
+                        <span>Finalizado</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
